@@ -1,0 +1,68 @@
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from pydantic import BaseModel
+import yt_dlp
+import uuid
+from pathlib import Path
+import os
+
+app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+class VideoRequest(BaseModel):
+    url: str
+    quality: str = "best"
+
+DOWNLOAD_DIR = Path("downloads")
+DOWNLOAD_DIR.mkdir(exist_ok=True)
+
+@app.get("/")
+def home():
+    return {"message": "✅ Backend is running!", "status": "ok"}
+
+@app.get("/api/healthz")
+def health():
+    return {"status": "ok"}
+
+@app.post("/api/get-info")
+async def get_info(request: VideoRequest):
+    try:
+        with yt_dlp.YoutubeDL({'quiet': True}) as ydl:
+            info = ydl.extract_info(request.url, download=False)
+            formats = []
+            seen = set()
+            for f in info.get('formats', []):
+                h = f.get('height')
+                if h and h not in seen:
+                    seen.add(h)
+                    formats.append({
+                        'format_id': f.get('format_id'),
+                        'resolution': f"{h}p",
+                        'ext': f.get('ext', 'mp4').upper()
+                    })
+            return {'success': True, 'title': info.get('title'), 'formats': formats[:10]}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/api/download")
+async def download(request: VideoRequest):
+    try:
+        filename = f"video_{uuid.uuid4().hex}"
+        output = DOWNLOAD_DIR / filename
+        with yt_dlp.YoutubeDL({'format': 'best', 'outtmpl': str(output)}) as ydl:
+            ydl.download([request.url])
+        files = list(DOWNLOAD_DIR.glob(f"{filename}*"))
+        return FileResponse(path=files[0], filename=files[0].name)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
